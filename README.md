@@ -1,4 +1,4 @@
-# RADIus ONline sessions
+# RADIus ONline dashboard
 
 ## About
 RADION is a small python radius accounting server which tracks current running sessions, simular to the [utmp(5)](http://man7.org/linux/man-pages/man5/utmp.5.html) file.
