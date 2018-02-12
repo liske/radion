@@ -1,0 +1,117 @@
+#!/usr/bin/env python
+
+import argparse
+import cherrypy
+import configparser
+import json
+import logging
+import re
+from pyrad import dictionary, packet, server
+
+logging.basicConfig(format='%(asctime)s %(module)s %(levelname)s: %(message)s', level=logging.DEBUG)
+logger = logging.getLogger("RADION")
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-c", "--config", help="config file to use", default="/etc/radion/radiond.ini")
+args = parser.parse_args()
+
+config = configparser.ConfigParser()
+config.read(args.config)
+
+if "RADIUS" not in config:
+    config["RADIUS"] = {}
+
+if "NAS" not in config:
+    config["NAS"] = {}
+
+defValidAttributes = ",".join([
+    "User-Name",
+    "NAS-IP-Address",
+    "NAS-Port",
+    "Service-Type",
+    "Acct-Status-Type",
+    "Acct-Delay-Time",
+    "Acct-Session-Id",
+    "Acct-Authentic",
+    "Acct-Session-Time",
+    "Acct-Terminate-Cause",
+    "NAS-Port-Id",
+    "NAS-Port-Type",
+])
+validAttributes = re.split(r"\s*,\s*", config['RADIUS'].get('validAttributes', defValidAttributes))
+
+
+# These values of Acct-Status-Type are handled
+# as session creation indication.
+defCreatesSessionTypes = ",".join([
+    "Start",
+    "Interim-Update",
+    "Alive",
+])
+createsSessionTypes = re.split(r"\s*,\s*", config['RADIUS'].get('createsSession', defCreatesSessionTypes))
+
+
+# These values of Acct-Status-Type are handled
+# as session termination indication.
+defTerminatesSessionTypes = ",".join([
+    "Stop",
+])
+terminatesSessionTypes = re.split(r"\s*,\s*", config['RADIUS'].get('terminatesSession', defTerminatesSessionTypes))
+
+
+# These values of Acct-Status-Type are as NAS
+# reboot indication and clears all sessions
+# associated with the NAS.
+defClearsSessionsTypes = ",".join([
+    "Accounting-On",
+    "Accounting-Off",
+])
+clearsSessionsTypes = re.split(r"\s*,\s*", config['RADIUS'].get('clearsSessions', defClearsSessionsTypes))
+
+
+class RADIONServer(server.Server):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.sessions = {}
+
+    def HandleAcctPacket(self, pkt):
+        print("Received an accounting request")
+        print("Attributes: ")
+        session = {}
+        for attr in pkt.keys():
+            print("%s: %s" % (attr, pkt[attr]))
+            if attr in validAttributes:
+                session[attr] = pkt[attr][0]
+        print("")
+
+        reply = self.CreateReplyPacket(pkt)
+        self.SendReplyPacket(pkt.fd, reply)
+
+        if "Acct-Session-Id" in session:
+            sid = session["NAS-IP-Address"] + "|" + session["Acct-Session-Id"]
+            if sid in self.sessions or session["Acct-Status-Type"] in createsSessionTypes:
+                self.sessions[sid] = session
+            if sid in self.sessions and session["Acct-Status-Type"] in terminatesSessionTypes:
+                del self.sessions[sid]
+
+    @cherrypy.expose
+    def index(self):
+        return(json.dumps(self.sessions, default=lambda x: None, indent=4) + "\n")
+
+
+if __name__ == '__main__':
+    # create server and read dictionary
+    srv = RADIONServer(dict=dictionary.Dictionary("etc/dictionary"))
+
+    # add clients (address, secret, name)
+    for host, secret in config["NAS"].items():
+        logger.info("register NAS {}".format(host))
+        srv.hosts[host] = server.RemoteHost(host, secret.encode(), host)
+    srv.BindToAddress("")
+
+    cherrypy.config.update({'server.socket_port': 8883})
+    cherrypy.tree.mount(srv, '/')
+    cherrypy.engine.start()
+
+    # start server
+    srv.Run()

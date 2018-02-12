@@ -1,0 +1,8 @@
+#!/bin/sh
+
+if [ -z "$VIRTUAL_ENV" ]; then
+    echo ""
+    echo "ERROR: Local python virtualenv not activated!"
+    echo ""
+    exit 1
+fi
